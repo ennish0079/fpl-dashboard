@@ -5,7 +5,6 @@ Created on Mon Sep  1 21:26:46 2025
 
 @author: hany
 """
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -25,7 +24,7 @@ UPDATE_INTERVAL_HOURS = 12  # How old the database can be before an update is tr
 
 # --- Page Config ---
 st.set_page_config(layout="wide")
-st.title('FPL Player Performance Dashboard ⚽')
+st.title('FPL Tactical Analysis Dashboard ⚽')
 
 # --- Data Fetching and Database Functions ---
 
@@ -40,7 +39,7 @@ def get_fpl_data():
         st.error(f"Error fetching main FPL data: {e}")
         return None
 
-def get_player_gameweek_history(player_id, progress_bar):
+def get_player_gameweek_history(player_id):
     """Fetches the gameweek history for a specific player."""
     url = f"https://fantasy.premierleague.com/api/element-summary/{player_id}/"
     try:
@@ -55,10 +54,12 @@ def create_database_tables():
     """Creates the SQLite database tables if they don't exist."""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+        # --- NEW: Added columns for new KPIs ---
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS players (
             id INTEGER PRIMARY KEY, web_name TEXT, team_name TEXT, position TEXT,
-            cost REAL, total_points INTEGER, display_name TEXT
+            cost REAL, total_points INTEGER, display_name TEXT,
+            points_per_million REAL, ownership_percent REAL
         )""")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS gameweek_history (
@@ -86,21 +87,28 @@ def update_database():
     players_df['position'] = players_df['element_type'].map(position_map)
     players_df['cost'] = players_df['now_cost'] / 10.0
     players_df['display_name'] = players_df['web_name'] + " (" + players_df['team_name'] + ")"
-    players_to_db = players_df[['id', 'web_name', 'team_name', 'position', 'cost', 'total_points', 'display_name']]
+    
+    # --- NEW: Calculate KPIs ---
+    players_df['ownership_percent'] = pd.to_numeric(players_df['selected_by_percent'])
+    # Avoid division by zero for players with zero cost (if any)
+    players_df['points_per_million'] = (players_df['total_points'] / players_df['cost']).fillna(0)
+
+    players_to_db = players_df[['id', 'web_name', 'team_name', 'position', 'cost', 'total_points', 
+                                'display_name', 'points_per_million', 'ownership_percent']]
     
     with sqlite3.connect(DB_NAME) as conn:
         players_to_db.to_sql('players', conn, if_exists='replace', index=False)
         status_message.write(f"Updated {len(players_to_db)} players in the database.")
 
         # Process gameweek history
-        status_message.write("Updating gameweek history for all players... (This may take a minute)")
+        status_message.write("Updating gameweek history... (This may take a minute)")
         progress_bar = st.progress(0)
         cursor = conn.cursor()
         all_player_ids = players_df['id'].tolist()
         total_players = len(all_player_ids)
 
         for i, player_id in enumerate(all_player_ids):
-            history_data = get_player_gameweek_history(player_id, progress_bar)
+            history_data = get_player_gameweek_history(player_id)
             if history_data and 'history' in history_data:
                 for gw in history_data['history']:
                     cursor.execute("INSERT OR REPLACE INTO gameweek_history VALUES (?, ?, ?, ?)",
@@ -143,41 +151,66 @@ try:
 
     # --- Sidebar Filters ---
     st.sidebar.header('Filters')
-    selected_position = st.sidebar.selectbox('Select Player Position', options=sorted(players_df['position'].unique()))
+    selected_position = st.sidebar.selectbox('Select Player Position', options=['All'] + sorted(players_df['position'].unique()))
     all_teams = ['All Teams'] + sorted(players_df['team_name'].unique())
     selected_team = st.sidebar.selectbox('Select Team', options=all_teams)
 
+    # --- NEW: Sidebar Sorter ---
+    st.sidebar.header('Sort Players By')
+    sort_by = st.sidebar.selectbox('Metric', ['Total Points', 'Points per Million (£)', 'Ownership (%)'])
+    sort_order = st.sidebar.radio('Order', ['Descending', 'Ascending'], index=0)
+
     # Apply filters
-    filtered_players = players_df[players_df['position'] == selected_position]
+    filtered_players = players_df.copy()
+    if selected_position != 'All':
+        filtered_players = filtered_players[filtered_players['position'] == selected_position]
     if selected_team != 'All Teams':
         filtered_players = filtered_players[filtered_players['team_name'] == selected_team]
-    filtered_players = filtered_players.sort_values(by='total_points', ascending=False)
+    
+    # Apply sorting
+    sort_map = {
+        'Total Points': 'total_points',
+        'Points per Million (£)': 'points_per_million',
+        'Ownership (%)': 'ownership_percent'
+    }
+    is_ascending = sort_order == 'Ascending'
+    filtered_players = filtered_players.sort_values(by=sort_map[sort_by], ascending=is_ascending)
 
-    # --- Player Selection ---
+    # --- NEW: Player Data Explorer Table ---
+    st.header('Player Data Explorer')
+    st.info('Use the filters and sorters in the sidebar to find the players you want. Click on column headers to sort.')
+    
+    # Columns to display
+    display_cols = ['display_name', 'position', 'cost', 'total_points', 'points_per_million', 'ownership_percent']
+    st.dataframe(filtered_players[display_cols].rename(columns={
+        'display_name': 'Player',
+        'position': 'Pos',
+        'cost': 'Cost (£m)',
+        'total_points': 'Points',
+        'points_per_million': 'Points/£m (ROI)',
+        'ownership_percent': 'Ownership (%)'
+    }).set_index('Player'), use_container_width=True)
+
+
+    # --- Chart Generation ---
     st.header('Compare Player Point Progression')
     selected_players = st.multiselect('Select players to compare:', options=filtered_players['display_name'].tolist())
 
-    # --- Chart Generation ---
     if selected_players:
         player_ids_to_chart = filtered_players[filtered_players['display_name'].isin(selected_players)]['id'].tolist()
         chart_df_filtered = history_df[history_df['player_id'].isin(player_ids_to_chart)].copy()
         player_map = players_df.set_index('id')['display_name']
         chart_df_filtered['Player'] = chart_df_filtered['player_id'].map(player_map)
         
-        chart_df_filtered = chart_df_filtered.sort_values(by=['Player', 'gameweek'])
         chart_df_filtered['Cumulative Points'] = chart_df_filtered.groupby('Player')['total_points'].cumsum()
         
         if not chart_df_filtered.empty:
             fig = px.line(chart_df_filtered, x='gameweek', y='Cumulative Points', color='Player',
-                          title=f'Cumulative Points Progression for {selected_position}s', markers=True,
-                          labels={'Cumulative Points': 'Total Points', 'gameweek': 'Gameweek'})
+                          title=f'Cumulative Points Progression', markers=True)
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No history found for selected players.")
-    else:
-        st.info('Select one or more players to see their progress.')
 
-except (sqlite3.OperationalError, pd.io.sql.DatabaseError):
-    st.error(f"Error reading from the database '{DB_NAME}'. It might be being updated. Please wait a moment and the page will refresh.")
+except (sqlite3.OperationalError, pd.io.sql.DatabaseError) as e:
+    st.error(f"Error reading from the database: {e}. It might be being updated. Please wait a moment and the page will refresh.")
     time.sleep(5)
     st.rerun()
+
