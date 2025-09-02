@@ -69,13 +69,12 @@ def create_database_tables():
 
 def update_database():
     """Fetches fresh data and updates the database. Shows progress in Streamlit."""
-    # Temporarily drop tables to ensure schema is fresh
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("DROP TABLE IF EXISTS players")
         cursor.execute("DROP TABLE IF EXISTS gameweek_history")
     
-    create_database_tables() # Recreate with the correct new schema
+    create_database_tables()
     
     status_message = st.status("Fetching fresh data from FPL API...", expanded=True)
     fpl_data = get_fpl_data()
@@ -131,7 +130,6 @@ def check_and_update_db():
         update_database()
         return
 
-    # --- NEW: Smart Schema Check ---
     is_schema_correct = False
     try:
         with sqlite3.connect(DB_NAME) as conn:
@@ -147,7 +145,6 @@ def check_and_update_db():
         if datetime.now() - last_modified_time > timedelta(hours=UPDATE_INTERVAL_HOURS):
             st.info("Database is older than 12 hours. Fetching fresh data...")
             update_database()
-
 
 @st.cache_data(ttl=3600)
 def load_data_from_db():
@@ -194,27 +191,27 @@ try:
         'ownership_percent': 'Ownership (%)'
     }).set_index('Player'), use_container_width=True)
 
-
     st.header('Compare Player Point Progression')
     player_options = filtered_players['display_name'].tolist()
     if player_options:
-      selected_players = st.multiselect('Select players to compare:', options=player_options)
-      if selected_players:
-          player_ids_to_chart = filtered_players[filtered_players['display_name'].isin(selected_players)]['id'].tolist()
-          chart_df_filtered = history_df[history_df['player_id'].isin(player_ids_to_chart)].copy()
-          player_map = players_df.set_index('id')['display_name']
-          chart_df_filtered['Player'] = chart_df_filtered['player_id'].map(player_map)
-          
-          chart_df_filtered['Cumulative Points'] = chart_df_filtered.groupby('Player')['total_points'].cumsum()
-          
-          if not chart_df_filtered.empty:
-              fig = px.line(chart_df_filtered, x='gameweek', y='Cumulative Points', color='Player',
-                            title=f'Cumulative Points Progression', markers=True)
-              st.plotly_chart(fig, use_container_width=True)
+        selected_players = st.multiselect('Select players to compare:', options=player_options)
+        if selected_players:
+            player_ids_to_chart = filtered_players[filtered_players['display_name'].isin(selected_players)]['id'].tolist()
+            chart_df_filtered = history_df[history_df['player_id'].isin(player_ids_to_chart)].copy()
+            player_map = players_df.set_index('id')['display_name']
+            chart_df_filtered['Player'] = chart_df_filtered['player_id'].map(player_map)
+            
+            # --- THIS IS THE FIX ---
+            # Enforce numeric type for the points column before calculating cumulative sum
+            chart_df_filtered['total_points'] = pd.to_numeric(chart_df_filtered['total_points'], errors='coerce').fillna(0)
+            
+            chart_df_filtered['Cumulative Points'] = chart_df_filtered.groupby('Player')['total_points'].cumsum()
+            
+            if not chart_df_filtered.empty:
+                fig = px.line(chart_df_filtered, x='gameweek', y='Cumulative Points', color='Player',
+                              title=f'Cumulative Points Progression', markers=True)
+                st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
     st.error(f"An error occurred while rendering the dashboard: {e}")
-
-
-
 
