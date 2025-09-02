@@ -6,7 +6,6 @@ Created on Mon Sep  1 21:26:46 2025
 @author: hany
 """
 
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -148,7 +147,8 @@ def check_and_update_db():
             st.info("Database is older than 12 hours. Fetching fresh data...")
             update_database()
 
-@st.cache_data(ttl=3600)
+# We have REMOVED the @st.cache_data decorator from this function
+# to prevent stale data issues. Reading from SQLite is fast enough.
 def load_data_from_db():
     """Loads all data from the SQLite database."""
     with sqlite3.connect(DB_NAME) as conn:
@@ -172,7 +172,6 @@ try:
     sort_order = st.sidebar.radio('Order', ['Descending', 'Ascending'], index=0)
 
     # --- Filtering Logic ---
-    # We create a filtered list for display, but keep the original for lookups
     filtered_players_for_display = players_df.copy()
     if selected_position != 'All':
         filtered_players_for_display = filtered_players_for_display[filtered_players_for_display['position'] == selected_position]
@@ -198,14 +197,11 @@ try:
     # --- Chart Generation ---
     st.header('Compare Player Point Progression')
     
-    # The options in the multiselect box are correctly based on the filtered list
     player_options = filtered_players_for_display['display_name'].tolist()
     
     if player_options:
         selected_players = st.multiselect('Select players to compare:', options=player_options)
         if selected_players:
-            # --- THIS IS THE FIX ---
-            # We look up the IDs from the original, unfiltered players_df (the "main warehouse")
             player_ids_to_chart = players_df[players_df['display_name'].isin(selected_players)]['id'].tolist()
             
             chart_df_filtered = history_df[history_df['player_id'].isin(player_ids_to_chart)].copy()
