@@ -5,6 +5,8 @@ Created on Mon Sep  1 21:26:46 2025
 
 @author: hany
 """
+
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -169,11 +171,13 @@ try:
     sort_by = st.sidebar.selectbox('Metric', ['Total Points', 'Points per Million (£)', 'Ownership (%)'])
     sort_order = st.sidebar.radio('Order', ['Descending', 'Ascending'], index=0)
 
-    filtered_players = players_df.copy()
+    # --- Filtering Logic ---
+    # We create a filtered list for display, but keep the original for lookups
+    filtered_players_for_display = players_df.copy()
     if selected_position != 'All':
-        filtered_players = filtered_players[filtered_players['position'] == selected_position]
+        filtered_players_for_display = filtered_players_for_display[filtered_players_for_display['position'] == selected_position]
     if selected_team != 'All Teams':
-        filtered_players = filtered_players[filtered_players['team_name'] == selected_team]
+        filtered_players_for_display = filtered_players_for_display[filtered_players_for_display['team_name'] == selected_team]
     
     sort_map = {
         'Total Points': 'total_points',
@@ -181,28 +185,33 @@ try:
         'Ownership (%)': 'ownership_percent'
     }
     is_ascending = sort_order == 'Ascending'
-    filtered_players = filtered_players.sort_values(by=sort_map[sort_by], ascending=is_ascending)
+    filtered_players_for_display = filtered_players_for_display.sort_values(by=sort_map[sort_by], ascending=is_ascending)
 
     st.header('Player Data Explorer')
     display_cols = ['display_name', 'position', 'cost', 'total_points', 'points_per_million', 'ownership_percent']
-    st.dataframe(filtered_players[display_cols].rename(columns={
+    st.dataframe(filtered_players_for_display[display_cols].rename(columns={
         'display_name': 'Player', 'position': 'Pos', 'cost': 'Cost (£m)',
         'total_points': 'Points', 'points_per_million': 'Points/£m (ROI)',
         'ownership_percent': 'Ownership (%)'
     }).set_index('Player'), use_container_width=True)
 
+    # --- Chart Generation ---
     st.header('Compare Player Point Progression')
-    player_options = filtered_players['display_name'].tolist()
+    
+    # The options in the multiselect box are correctly based on the filtered list
+    player_options = filtered_players_for_display['display_name'].tolist()
+    
     if player_options:
         selected_players = st.multiselect('Select players to compare:', options=player_options)
         if selected_players:
-            player_ids_to_chart = filtered_players[filtered_players['display_name'].isin(selected_players)]['id'].tolist()
+            # --- THIS IS THE FIX ---
+            # We look up the IDs from the original, unfiltered players_df (the "main warehouse")
+            player_ids_to_chart = players_df[players_df['display_name'].isin(selected_players)]['id'].tolist()
+            
             chart_df_filtered = history_df[history_df['player_id'].isin(player_ids_to_chart)].copy()
             player_map = players_df.set_index('id')['display_name']
             chart_df_filtered['Player'] = chart_df_filtered['player_id'].map(player_map)
             
-            # --- THIS IS THE FIX ---
-            # Enforce numeric type for the points column before calculating cumulative sum
             chart_df_filtered['total_points'] = pd.to_numeric(chart_df_filtered['total_points'], errors='coerce').fillna(0)
             
             chart_df_filtered['Cumulative Points'] = chart_df_filtered.groupby('Player')['total_points'].cumsum()
@@ -214,4 +223,5 @@ try:
 
 except Exception as e:
     st.error(f"An error occurred while rendering the dashboard: {e}")
+
 
